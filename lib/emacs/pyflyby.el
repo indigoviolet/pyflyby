@@ -71,8 +71,10 @@ Tries to keep point in the same place."
 
 
 (defun pyflyby-transform-region-with-command (command &rest args)
-  (unless (eq major-mode 'python-mode)
-    (error "Pyflyby should only be used on python buffers"))
+  (unless (derived-mode-p 'python-base-mode)
+    (error "Pyflyby should only be used on Python-based buffers"))
+  ;; (unless (eq major-mode 'python-mode)
+  ;;   (error "Pyflyby should only be used on python buffers"))
   (let* ((result
           (apply 'pyflyby--pipe-to-command (point-min) (point-max) command args))
          (exit-value (nth 0 result))
