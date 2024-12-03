@@ -8,19 +8,19 @@ from   ast                      import AsyncFunctionDef, TypeIgnore
 
 from   collections              import namedtuple
 from   doctest                  import DocTestParser
-from   functools                import total_ordering
+from   functools                import cached_property, total_ordering
 from   itertools                import groupby
 
 from   pyflyby._file            import FilePos, FileText, Filename
 from   pyflyby._flags           import CompilerFlags
 from   pyflyby._log             import logger
-from   pyflyby._util            import cached_attribute, cmp
+from   pyflyby._util            import cmp
 
 import re
 import sys
 from   textwrap                 import dedent
 import types
-from   typing                   import Any, List, Optional, Tuple, Union, cast
+from   typing                   import Any, List, Optional, Tuple, Union, cast, Literal
 import warnings
 
 
@@ -346,14 +346,11 @@ def _annotate_ast_nodes(ast_node: ast.AST) -> AnnotatedAst:
     flags = aast_node.flags
     startpos = text.startpos
     _annotate_ast_startpos(aast_node, None, startpos, text, flags)
-    # Not used for now:
-    #   ast_node.context = AstNodeContext(None, None, None)
-    #   _annotate_ast_context(ast_node)
     return aast_node
 
 
 def _annotate_ast_startpos(
-    ast_node: ast.AST, parent_ast_node, minpos, text, flags
+    ast_node: ast.AST, parent_ast_node, minpos: FilePos, text: FileText, flags
 ) -> bool:
     r"""
     Annotate ``ast_node``.  Set ``ast_node.startpos`` to the starting position
@@ -410,8 +407,8 @@ def _annotate_ast_startpos(
     # Walk all nodes/fields of the AST.  We implement this as a custom
     # depth-first search instead of using ast.walk() or ast.NodeVisitor
     # so that we can easily keep track of the preceding node's lineno.
-    child_minpos = minpos
-    is_first_child = True
+    child_minpos: FilePos = minpos
+    is_first_child: bool = True
     leftstr_node = None
     for child_node in _iter_child_nodes_in_order(aast_node):
         leftstr = _annotate_ast_startpos(
@@ -469,7 +466,16 @@ def _annotate_ast_startpos(
         # Not a multiline string literal.  (I.e., it could be a non-string or
         # a single-line string.)
         # Easy.
-        startpos = text.startpos + delta
+        if sys.version_info < (3, 12):
+            """There is an issue for f-strings at the begining of a file in 3.11 and
+            before
+
+            https://github.com/deshaw/pyflyby/issues/361,
+            here we ensure a child node min pos, can't be before it's parent.
+            """
+            startpos = max(text.startpos + delta, minpos)
+        else:
+            startpos = text.startpos + delta
 
         # Special case for 'with' statements.  Consider the code:
         #    with X: pass
@@ -515,29 +521,6 @@ def _annotate_ast_startpos(
     # as the type annotation say many things were impossible (slices indexed by FilePos
     # instead of integers.
     raise ValueError("Couldn't find exact position of %s" % (ast.dump(ast_node)))
-
-
-def _annotate_ast_context(ast_node):
-    """
-    Recursively annotate ``context`` on ast nodes, setting ``context`` to
-    a `AstNodeContext` named tuple with values
-    ``(parent, field, index)``.
-    Each aast_node satisfies ``parent.<field>[<index>] is ast_node``.
-
-    For non-list fields, the index part is ``None``.
-    """
-    assert isinstance(ast_node, ast.AST)
-    for field_name, field_value in ast.iter_fields(ast_node):
-        if isinstance(field_value, ast.AST):
-            child_node = field_value
-            child_node.context = AstNodeContext(ast_node, field_name, None)
-            _annotate_ast_context(child_node)
-        elif isinstance(field_value, list):
-            for i, item in enumerate(field_value):
-                if isinstance(item, ast.AST):
-                    child_node = item
-                    child_node.context = AstNodeContext(ast_node, field_name, i)
-                    _annotate_ast_context(child_node)
 
 
 def _split_code_lines(ast_nodes, text):
@@ -623,52 +606,7 @@ def _split_code_lines(ast_nodes, text):
             yield ([], text[endpos:next_startpos])
 
 
-def _ast_node_is_in_docstring_position(ast_node):
-    """
-    Given a ``Str`` AST node, return whether its position within the AST makes
-    it eligible as a docstring.
-
-    The main way a ``Str`` can be a docstring is if it is a standalone string
-    at the beginning of a ``Module``, ``FunctionDef``, ``AsyncFucntionDef``
-    or ``ClassDef``.
-
-    We also support variable docstrings per Epydoc:
-
-      - If a variable assignment statement is immediately followed by a bare
-        string literal, then that assignment is treated as a docstring for
-        that variable.
-
-    :type ast_node:
-      ``ast.Str``
-    :param ast_node:
-      AST node that has been annotated by ``_annotate_ast_nodes``.
-    :rtype:
-      ``bool``
-    :return:
-      Whether this string ast node is in docstring position.
-    """
-    if not _is_ast_str_or_byte(ast_node):
-        raise TypeError
-    expr_node = ast_node.context.parent
-    if not isinstance(expr_node, ast.Expr):
-        return False
-    assert ast_node.context.field == 'value'
-    assert ast_node.context.index is None
-    expr_ctx = expr_node.context
-    if expr_ctx.field != 'body':
-        return False
-    parent_node = expr_ctx.parent
-    if not isinstance(parent_node, (ast.FunctionDef, ast.ClassDef, ast.Module, AsyncFunctionDef)):
-        return False
-    if expr_ctx.index == 0:
-        return True
-    prev_sibling_node = parent_node.body[expr_ctx.index-1]
-    if isinstance(prev_sibling_node, ast.Assign):
-        return True
-    return False
-
-
-def infer_compile_mode(arg):
+def infer_compile_mode(arg:ast.AST) -> Literal['exec','eval','single']:
     """
     Infer the mode needed to compile ``arg``.
 
@@ -679,19 +617,18 @@ def infer_compile_mode(arg):
     """
     # Infer mode from ast object.
     if isinstance(arg, ast.Module):
-        mode = "exec"
+        return "exec"
     elif isinstance(arg, ast.Expression):
-        mode = "eval"
+        return "eval"
     elif isinstance(arg, ast.Interactive):
-        mode = "single"
+        return "single"
     else:
         raise TypeError(
             "Expected Module/Expression/Interactive ast node; got %s"
             % (type(arg).__name__))
-    return mode
 
 
-class _DummyAst_Node(object):
+class _DummyAst_Node:
     pass
 
 
@@ -945,8 +882,9 @@ class PythonBlock:
         return cls.from_text(Filename(filename))
 
     @classmethod
-    def from_text(cls, text, filename=None, startpos=None, flags=None,
-                  auto_flags=False):
+    def from_text(
+        cls, text, filename=None, startpos=None, flags=None, auto_flags: bool = False
+    ):
         """
         :type text:
           `FileText` or convertible
@@ -981,7 +919,7 @@ class PythonBlock:
     def __construct_from_annotated_ast(cls, annotated_ast_nodes, text:FileText, flags):
         # Constructor for internal use by _split_by_statement() or
         # concatenate().
-        ast_node = AnnotatedModule(annotated_ast_nodes)
+        ast_node = AnnotatedModule(annotated_ast_nodes, type_ignores=[])
         ast_node.text = text
         ast_node.flags = flags
         if not hasattr(ast_node, "source_flags"):
@@ -1044,7 +982,7 @@ class PythonBlock:
     def endpos(self):
         return self.text.endpos
 
-    @cached_attribute
+    @cached_property
     def _ast_node_or_parse_exception(self):
         """
         Attempt to parse this block of code into an abstract syntax tree.
@@ -1069,7 +1007,7 @@ class PythonBlock:
             # Cache the exception to avoid re-attempting while debugging.
             return e
 
-    @cached_attribute
+    @cached_property
     def parsable(self):
         """
         Whether the contents of this ``PythonBlock`` are parsable as Python
@@ -1080,7 +1018,7 @@ class PythonBlock:
         """
         return isinstance(self._ast_node_or_parse_exception, ast.AST)
 
-    @cached_attribute
+    @cached_property
     def parsable_as_expression(self):
         """
         Whether the contents of this ``PythonBlock`` are parsable as a single
@@ -1091,7 +1029,7 @@ class PythonBlock:
         """
         return self.parsable and self.expression_ast_node is not None
 
-    @cached_attribute
+    @cached_property
     def ast_node(self):
         """
         Parse this block of code into an abstract syntax tree.
@@ -1112,7 +1050,7 @@ class PythonBlock:
         else:
             raise r
 
-    @cached_attribute
+    @cached_property
     def annotated_ast_node(self) -> AnnotatedAst:
         """
         Return ``self.ast_node``, annotated in place with positions.
@@ -1127,7 +1065,7 @@ class PythonBlock:
         # ! result is mutated and returned
         return _annotate_ast_nodes(result)
 
-    @cached_attribute
+    @cached_property
     def expression_ast_node(self) -> Optional[ast.Expression]:
         """
         Return an ``ast.Expression`` if ``self.ast_node`` can be converted into
@@ -1144,7 +1082,7 @@ class PythonBlock:
         else:
             return None
 
-    def parse(self, mode=None) -> Union[ast.Expression, ast.Module]:
+    def parse(self, mode: Optional[str] = None) -> Union[ast.Expression, ast.Module]:
         """
         Parse the source text into an AST.
 
@@ -1165,7 +1103,7 @@ class PythonBlock:
                 return self.expression_ast_node
             else:
                 raise SyntaxError
-        elif mode == None:
+        elif mode is None:
             if self.expression_ast_node:
                 return self.expression_ast_node
             else:
@@ -1176,7 +1114,7 @@ class PythonBlock:
         else:
             raise ValueError("parse(): invalid mode=%r" % (mode,))
 
-    def compile(self, mode=None):
+    def compile(self, mode: Optional[str] = None):
         """
         Parse into AST and compile AST into code.
 
@@ -1184,11 +1122,11 @@ class PythonBlock:
           ``CodeType``
         """
         ast_node = self.parse(mode=mode)
-        mode = infer_compile_mode(ast_node)
+        c_mode = infer_compile_mode(ast_node)
         filename = str(self.filename or "<unknown>")
-        return compile(ast_node, filename, mode)
+        return compile(ast_node, filename, c_mode)
 
-    @cached_attribute
+    @cached_property
     def statements(self) -> Tuple[PythonStatement, ...]:
         r"""
         Partition of this ``PythonBlock`` into individual ``PythonStatement`` s.
@@ -1245,7 +1183,7 @@ class PythonBlock:
             statements.append(statement)
         return tuple(statements)
 
-    @cached_attribute
+    @cached_property
     def source_flags(self):
         """
         If the AST contains __future__ imports, then the compiler_flags
@@ -1261,7 +1199,7 @@ class PythonBlock:
         """
         return self.ast_node.source_flags
 
-    @cached_attribute
+    @cached_property
     def flags(self):
         """
         The compiler flags for this code block, including both the input flags
@@ -1325,11 +1263,6 @@ class PythonBlock:
         #   - This function yields multiple docstrings (even per ast node)
         #   - This function doesn't raise TypeError on other AST types
         #   - This function doesn't cleandoc
-        # A previous implementation did
-        #   [n for n in self.string_literals()
-        #    if _ast_node_is_in_docstring_position(n)]
-        # However, the method we now use is more straightforward, and doesn't
-        # require first annotating each node with context information.
         docstring_containers = (ast.FunctionDef, ast.ClassDef, ast.Module, AsyncFunctionDef)
         for node in _walk_ast_nodes_in_order(self.annotated_ast_node):
             if not isinstance(node, docstring_containers):

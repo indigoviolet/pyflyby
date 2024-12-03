@@ -2,14 +2,19 @@
 # Copyright (C) 2011, 2012, 2013, 2014, 2015 Karl Chen.
 # License: MIT http://opensource.org/licenses/MIT
 
+from __future__ import annotations
+
 
 
 from   collections              import defaultdict
 import os
 import re
 import sys
+import warnings
 
-from   typing                   import Any, Dict, Tuple, Union, List
+from   pathlib                  import Path
+
+from   typing                   import Any, Dict, List, Tuple, Union
 
 from   pyflyby._file            import (Filename, UnsafeFilenameError,
                                         expand_py_files_from_args)
@@ -25,6 +30,7 @@ if sys.version_info <= (3, 12):
 else:
     from typing import Self
 
+SUPPORT_DEPRECATED_BEHAVIOR = False
 
 @memoize
 def _find_etc_dirs():
@@ -201,6 +207,8 @@ class ImportDB:
     mandatory_imports: ImportSet
     canonical_imports: ImportMap
 
+    _default_cache: Dict[Any, Any] = {}
+
     def __new__(cls, *args):
         if len(args) != 1:
             raise TypeError
@@ -213,7 +221,6 @@ class ImportDB:
 
     
 
-    _default_cache: Dict[Any, Any] = {}
 
     @classmethod
     def clear_default_cache(cls):
@@ -224,24 +231,22 @@ class ImportDB:
         cached results.  Existing ImportDB instances are not affected by this
         call.
         """
-        if cls._default_cache:
-            if logger.debug_enabled:
-                allpyfiles = set()
-                for tup in cls._default_cache:
-                    if tup[0] != 2:
-                        continue
-                    for tup2 in tup[1:]:
-                        for f in tup2:
-                            assert isinstance(f, Filename)
-                            if f.ext == '.py':
-                                allpyfiles.add(f)
-                nfiles = len(allpyfiles)
-                logger.debug("ImportDB: Clearing default cache of %d files",
-                             nfiles)
-            cls._default_cache.clear()
+        if logger.debug_enabled:
+            allpyfiles = set()
+            for tup in cls._default_cache:
+                if tup[0] != 2:
+                    continue
+                for tup2 in tup[1:]:
+                    for f in tup2:
+                        assert isinstance(f, Filename)
+                        if f.ext == ".py":
+                            allpyfiles.add(f)
+            nfiles = len(allpyfiles)
+            logger.debug("ImportDB: Clearing default cache of %d files", nfiles)
+        cls._default_cache.clear()
 
     @classmethod
-    def get_default(cls, target_filename: Union[Filename, str]):
+    def get_default(cls, target_filename: Union[Filename, str], /):
         """
         Return the default import library for the given target filename.
 
@@ -258,7 +263,7 @@ class ImportDB:
         :rtype:
           `ImportDB`
         """
-        # We're going to canonicalize target_filenames in a number of steps.
+        # We're going to canonicalize target_filename in a number of steps.
         # At each step, see if we've seen the input so far.  We do the cache
         # checking incrementally since the steps involve syscalls.  Since this
         # is going to potentially be executed inside the IPython interactive
@@ -267,25 +272,55 @@ class ImportDB:
         # been touched, and if so, return new data.  Check file timestamps at
         # most once every 60 seconds.
         cache_keys:List[Tuple[Any,...]] = []
-        if target_filename:
-            if isinstance(target_filename, str):
-                target_filename = Filename(target_filename)
-        target_filename = target_filename or Filename(".")
-        assert isinstance(target_filename, Filename)
+        if target_filename is None:
+            target_filename = "."
+
+        if isinstance(target_filename, Filename):
+            target_filename = str(target_filename)
+
+        assert isinstance(target_filename, str), (
+            target_filename,
+            type(target_filename),
+        )
+
+        target_path = Path(target_filename).resolve()
+
+        parents: List[Path]
+        if target_path.is_dir():
+            parents = [target_path]
+        else:
+            parents = []
+
+        # filter safe parents
+        safe_parent = None
+        for p in parents + list(target_path.parents):
+            try:
+                safe_parent = Filename(str(p))
+                break
+            except UnsafeFilenameError:
+                pass
+        if safe_parent is None:
+            raise ValueError("No know path are safe")
+
+        target_dirname = safe_parent
+
         if target_filename.startswith("/dev"):
-            target_filename = Filename(".")
-        target_dirname:Filename = target_filename
+            try:
+                target_dirname = Filename(".")
+            except UnsafeFilenameError:
+                pass
         # TODO: with StatCache
         while True:
-            cache_keys.append((1,
-                               target_dirname,
-                               os.getenv("PYFLYBY_PATH"),
-                               os.getenv("PYFLYBY_KNOWN_IMPORTS_PATH"),
-                               os.getenv("PYFLYBY_MANDATORY_IMPORTS_PATH")))
-            try:
-                return cls._default_cache[cache_keys[-1]]
-            except KeyError:
-                pass
+            key = (
+                1,
+                target_dirname,
+                os.getenv("PYFLYBY_PATH"),
+                os.getenv("PYFLYBY_KNOWN_IMPORTS_PATH"),
+                os.getenv("PYFLYBY_MANDATORY_IMPORTS_PATH"),
+            )
+            cache_keys.append(key)
+            if key in cls._default_cache:
+                return cls._default_cache[key]
             if target_dirname.isdir:
                 break
             target_dirname = target_dirname.dir
@@ -313,7 +348,7 @@ class ImportDB:
         filenames = _get_python_path("PYFLYBY_PATH", DEFAULT_PYFLYBY_PATH,
                                      target_dirname)
         mandatory_imports_filenames = ()
-        if "SUPPORT DEPRECATED BEHAVIOR":
+        if SUPPORT_DEPRECATED_BEHAVIOR:
             PYFLYBY_PATH = _get_env_var("PYFLYBY_PATH", DEFAULT_PYFLYBY_PATH)
             # If the old deprecated environment variables are set, then heed
             # them.
@@ -340,7 +375,15 @@ class ImportDB:
                 default_path = PYFLYBY_PATH
                 # Expand $PYFLYBY_KNOWN_IMPORTS_PATH.
                 filenames = _get_python_path(
-                    "PYFLYBY_KNOWN_IMPORTS_PATH", default_path, target_dirname)
+                    "PYFLYBY_KNOWN_IMPORTS_PATH", default_path, target_dirname
+                )
+                warnings.warn(
+                    "The environment variable PYFLYBY_KNOWN_IMPORTS_PATH was"
+                    " deprecated since 2014. But never emitted a warning,"
+                    " please use PYFLYBY_PATH or open an issue"
+                    " if you are still requiring PYFLYBY_KNOWN_IMPORTS_PATH",
+                    DeprecationWarning,
+                )
                 logger.debug(
                     "The environment variable PYFLYBY_KNOWN_IMPORTS_PATH is deprecated.  "
                     "Use PYFLYBY_PATH.")
@@ -353,8 +396,15 @@ class ImportDB:
                     os.path.join(d,"mandatory_imports") for d in PYFLYBY_PATH]
                 # Expand $PYFLYBY_MANDATORY_IMPORTS_PATH.
                 mandatory_imports_filenames = _get_python_path(
-                    "PYFLYBY_MANDATORY_IMPORTS_PATH",
-                    default_path, target_dirname)
+                    "PYFLYBY_MANDATORY_IMPORTS_PATH", default_path, target_dirname
+                )
+                warnings.warn(
+                    "The environment variable PYFLYBY_MANDATORY_IMPORTS_PATH was"
+                    " deprecated since 2014 but never emitted a warning."
+                    " Use PYFLYBY_PATH and write __mandatory_imports__=['...']"
+                    " in your files.",
+                    DeprecationWarning,
+                )
                 logger.debug(
                     "The environment variable PYFLYBY_MANDATORY_IMPORTS_PATH is deprecated.  "
                     "Use PYFLYBY_PATH and write __mandatory_imports__=['...'] in your files.")
@@ -369,7 +419,7 @@ class ImportDB:
         return result
 
     @classmethod
-    def interpret_arg(cls, arg, target_filename):
+    def interpret_arg(cls, arg, target_filename) -> ImportDB:
         if arg is None:
             return cls.get_default(target_filename)
         else:
@@ -499,16 +549,25 @@ class ImportDB:
         :rtype:
           `ImportDB`
         """
+        if _mandatory_filenames_deprecated:
+            warnings.warn(
+                "_mandatory_filenames_deprecated has been deprecated in Pyflyby"
+                " 1.9.4 and will removed in future versions",
+                DeprecationWarning,
+                stacklevel=1,
+            )
         if not isinstance(filenames, (tuple, list)):
             # TODO DeprecationWarning July 2024,
             # this is internal deprecate not passing a list;
             filenames = [filenames]
         for f in filenames:
             assert isinstance(f, Filename)
-        logger.debug("ImportDB: loading [%s], mandatory=[%s]",
-                     ', '.join(map(str, filenames)),
-                     ', '.join(map(str, _mandatory_filenames_deprecated)))
-        if "SUPPORT DEPRECATED BEHAVIOR":
+        logger.debug(
+            "ImportDB: loading %r, mandatory=%r",
+            [str(f) for f in filenames],
+            [str(f) for f in _mandatory_filenames_deprecated],
+        )
+        if SUPPORT_DEPRECATED_BEHAVIOR:
             # Before 2014-10, pyflyby read the following:
             #   * known_imports from $PYFLYBY_PATH/known_imports/**/*.py or
             #     $PYFLYBY_KNOWN_IMPORTS_PATH/**/*.py,

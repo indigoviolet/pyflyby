@@ -30,6 +30,12 @@ Invocation summary
   py nb                                 Start IPython Notebook with autoimporter
 
 
+  py [--add-deprecated-builtins]        Inject "breakpoint", "debug_exception",
+                                        "debug_statement", "waitpoint" into
+                                        builtins. This is deprecated, and
+                                        present for backward compatibilty
+                                        but will be removed in the future.
+
 Features
 ========
 
@@ -280,19 +286,6 @@ from   typing                   import Any
 from   pyflyby._util            import cmp
 from   shlex                    import quote as shquote
 
-usage = """
-py --- command-line python multitool with automatic importing
-
-$ py [--file]   filename.py arg1 arg2      Execute file
-$ py [--apply]  function arg1 arg2         Call function
-$ py [--eval]  'function(arg1, arg2)'      Evaluate code
-$ py [--module] modname arg1 arg2          Run a module
-
-$ py --debug    file/code... args...       Debug code
-$ py --debug    PID                        Attach debugger to PID
-
-$ py                                       IPython shell
-""".strip()
 
 # TODO: add --tidy-imports, etc
 
@@ -371,6 +364,19 @@ from   pyflyby._modules         import ModuleHandle
 from   pyflyby._parse           import PythonBlock
 from   pyflyby._util            import indent, prefixes
 
+usage = """
+py --- command-line python multitool with automatic importing
+
+$ py [--file]   filename.py arg1 arg2      Execute file
+$ py [--apply]  function arg1 arg2         Call function
+$ py [--eval]  'function(arg1, arg2)'      Evaluate code
+$ py [--module] modname arg1 arg2          Run a module
+
+$ py --debug    file/code... args...       Debug code
+$ py --debug    PID                        Attach debugger to PID
+
+$ py                                       IPython shell
+""".strip()
 
 # Default compiler flags (feature flags) used for all user code.  We include
 # "print_function" here, but we also use auto_flags=True, which means
@@ -403,7 +409,7 @@ def _get_argspec(arg:Any) -> inspect.FullArgSpec:
         "_get_argspec: unexpected %s" % (type(arg).__name__,))
 
 
-def _requires_parens_as_function(function_name:str):
+def _requires_parens_as_function(function_name:str) -> bool:
     """
     Returns whether the given string of a callable would require parentheses
     around it to call it.
@@ -546,7 +552,7 @@ class _ParseInterruptedWantSource(Exception):
     pass
 
 
-class UserExpr(object):
+class UserExpr:
     """
     An expression from user input, and its evaluated value.
 
@@ -641,7 +647,7 @@ class UserExpr(object):
         else:
             raise ValueError("UserExpr(): bad arg_mode=%r" % (arg_mode,))
 
-    def _infer_and_evaluate(self):
+    def _infer_and_evaluate(self) -> None:
         if self._original_arg_mode == "raw_value":
             pass
         elif self._original_arg_mode == "eval":
@@ -885,7 +891,7 @@ class NotAFunctionError(Exception):
     pass
 
 
-def _get_help(expr, verbosity=1):
+def _get_help(expr:UserExpr, verbosity:int=1) -> str:
     """
     Construct a help string.
 
@@ -1047,7 +1053,7 @@ def auto_apply(function, commandline_args, namespace, arg_mode=None,
 
 
 @total_ordering
-class LoggedList(object):
+class LoggedList:
     """
     List that logs which members have not yet been accessed (nor removed).
     """
@@ -1688,6 +1694,7 @@ class _PyMain(object):
 
     def _parse_global_opts(self):
         args = list(self.main_args)
+        self.add_deprecated_builtins = False
         self.debug       = False
         self.interactive = False
         self.verbosity   = 1
@@ -1791,6 +1798,10 @@ class _PyMain(object):
                 novalue()
                 postmortem = False
                 continue
+            if argname in ["add-deprecated-builtins", "add_deprecated_builtins"]:
+                del args[0]
+                self.add_deprecated_builtins = True
+                continue
             break
         self.args = args
         if postmortem == "auto":
@@ -1798,18 +1809,18 @@ class _PyMain(object):
         global _enable_postmortem_debugger
         _enable_postmortem_debugger = postmortem
 
-    def _enable_debug_tools(self):
+    def _enable_debug_tools(self, *, add_deprecated: bool):
         # Enable a bunch of debugging tools.
         enable_faulthandler()
         enable_signal_handler_debugger()
         enable_sigterm_handler()
-        add_debug_functions_to_builtins()
+        add_debug_functions_to_builtins(add_deprecated=add_deprecated)
 
     def run(self):
         # Parse global options.
         sys.orig_argv = list(sys.argv)
         self._parse_global_opts()
-        self._enable_debug_tools()
+        self._enable_debug_tools(add_deprecated=self.add_deprecated_builtins)
         self._run_action()
         self._pre_exit()
 

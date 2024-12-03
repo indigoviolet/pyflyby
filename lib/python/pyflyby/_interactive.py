@@ -15,14 +15,15 @@ import re
 import subprocess
 import sys
 
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Union, Literal
 
 
 from   pyflyby._autoimp         import (LoadSymbolError, ScopeStack, auto_eval,
                                         auto_import,
                                         clear_failed_imports_cache,
                                         load_symbol)
-from   pyflyby._dynimp          import inject as inject_dynamic_import
+from   pyflyby._dynimp          import (inject as inject_dynamic_import, 
+                                        PYFLYBY_LAZY_LOAD_PREFIX)
 from   pyflyby._comms           import (initialize_comms, remove_comms,
                                         send_comm_message, MISSING_IMPORTS)
 from   pyflyby._file            import Filename, atomic_write_file, read_file
@@ -34,7 +35,6 @@ from   pyflyby._parse           import PythonBlock
 from   pyflyby._util            import (AdviceCtx, Aspect, CwdCtx,
                                         FunctionWithGlobals, NullCtx, advise,
                                         indent)
-
 
 if False:
     __original__ = None # for pyflakes
@@ -85,9 +85,6 @@ def _get_or_create_ipython_terminal_app():
         pass
     else:
         return TerminalIPythonApp.instance()
-    # The following has been tested on IPython 0.10.
-    if hasattr(IPython, "ipapi"):
-        return _IPython010TerminalApplication.instance()
     raise RuntimeError(
         "Couldn't get TerminalIPythonApp class.  "
         "Is your IPython version too old (or too new)?  "
@@ -120,51 +117,6 @@ def _app_is_initialized(app):
     else:
         return False
 
-
-
-class _IPython010TerminalApplication(object):
-    """
-    Shim class that mimics IPython 0.11+ application classes, for use in
-    IPython 0.10.
-    """
-
-    # IPython.ipapi.launch_instance() => IPython.Shell.start() creates an
-    # instance of "IPShell".  IPShell has an attribute named "IP" which is an
-    # "InteractiveShell".
-
-    _instance = None
-
-    @classmethod
-    def instance(cls):
-        if cls._instance is not None:
-            self = cls._instance
-            self.init_shell()
-            return self
-        import IPython
-        if not hasattr(IPython, "ipapi"):
-            raise RuntimeError("Inappropriate version of IPython %r"
-                               % (IPython.__version__,))
-        self = cls._instance = cls()
-        self.init_shell()
-        return self
-
-    def init_shell(self):
-        import IPython
-        ipapi = IPython.ipapi.get()                # IPApi instance
-        if ipapi is not None:
-            self.shell = ipapi.IP                  # InteractiveShell instance
-        else:
-            self.shell = None
-
-    def initialize(self, argv=None):
-        import IPython
-        logger.debug("Creating IPython 0.10 session")
-        self._session = IPython.ipapi.make_session() # IPShell instance
-        self.init_shell()
-        assert self._session is not None
-
-    def start(self):
-        self._session.mainloop()
 
 
 
@@ -412,30 +364,7 @@ def install_in_ipython_config_file():
     else:
         _install_in_ipython_config_file_40()
         return
-    # The following has been tested on IPython 0.12, 0.13, 1.0, 1.2, 2.0, 2.1,
-    # 2.2, 2.3, 2.4, 3.0, 3.1, 3.2, 4.0.
-    try:
-        IPython.core.profiledir.ProfileDir.startup_dir
-    except AttributeError:
-        pass
-    else:
-        _install_in_ipython_config_file_012()
-        return
-    # The following has been tested on IPython 0.11.
-    try:
-        IPython.core.profiledir.ProfileDir
-    except AttributeError:
-        pass
-    else:
-        _install_in_ipython_config_file_011()
-        return
-    try:
-        IPython.genutils.get_ipython_dir
-    except AttributeError:
-        pass
-    else:
-        _install_in_ipython_config_file_010()
-        return
+
     raise RuntimeError(
         "Couldn't install pyflyby autoimporter in IPython.  "
         "Is your IPython version too old (or too new)?  "
@@ -555,96 +484,10 @@ def _install_in_ipython_config_file_40():
         logger.info("[DONE] Removed old file %s (moved to %s)", old_fn, trash_fn)
 
 
-def _install_in_ipython_config_file_012():
-    """
-    Implementation of `install_in_ipython_config_file` for IPython 0.12+.
-    Tested with IPython 0.12, 0.13, 1.0, 1.2, 2.0, 2.1, 2.2, 2.3, 2.4, 3.0,
-    3.1, 3.2, 4.0.
-    """
-    import IPython
-    ipython_dir = Filename(IPython.utils.path.get_ipython_dir())
-    if not ipython_dir.isdir:
-        raise RuntimeError(
-            "Couldn't find IPython config dir.  Tried %s" % (ipython_dir,))
-    startup_dir = ipython_dir / "profile_default" / "startup"
-    if not startup_dir.isdir:
-        raise RuntimeError(
-            "Couldn't find IPython startup dir.  Tried %s" % (startup_dir,))
-    fn = startup_dir / "50-pyflyby.py"
-    if fn.exists:
-        logger.info("Doing nothing, because %s already exists", fn)
-        return
-    argv = sys.argv[:]
-    argv[0] = os.path.realpath(argv[0])
-    argv = ' '.join(argv)
-    header = (
-        "# File: {fn}\n"
-        "#\n"
-        "# Generated by {argv}\n"
-        "#\n"
-        "# This file causes IPython to enable the Pyflyby Auto Importer.\n"
-        "#\n"
-        "# To uninstall, just delete this file.\n"
-        "#\n"
-    ).format(**locals())
-    contents = header + _generate_enabler_code()
-    logger.info("Installing pyflyby auto importer in your IPython startup")
-    logger.info("Writing to %s:\n%s", fn, contents)
-    atomic_write_file(fn, contents)
 
 
-def _install_in_ipython_config_file_011():
-    """
-    Implementation of `install_in_ipython_config_file` for IPython 0.11.
-    """
-    import IPython
-    ipython_dir = Filename(IPython.utils.path.get_ipython_dir())
-    fn = ipython_dir / "profile_default" / "ipython_config.py"
-    if not fn.exists:
-        raise RuntimeError(
-            "Couldn't find IPython startup file.  Tried %s" % (fn,))
-    old_contents = read_file(fn).joined
-    if re.search(r"^ *(pyflyby[.])?enable_auto_importer[(][)]", old_contents, re.M):
-        logger.info("Doing nothing, because already installed in %s", fn)
-        return
-    header = (
-        "\n"
-        "\n"
-        "#\n"
-        "# Enable the Pyflyby Auto Importer.\n"
-    )
-    new_contents = header + _generate_enabler_code()
-    contents = old_contents.rstrip() + new_contents
-    logger.info("Installing pyflyby auto importer in your IPython startup")
-    logger.info("Appending to %s:\n%s", fn, new_contents)
-    atomic_write_file(fn, contents)
 
 
-def _install_in_ipython_config_file_010():
-    """
-    Implementation of `install_in_ipython_config_file` for IPython 0.10.
-    """
-    import IPython
-    ipython_dir = Filename(IPython.genutils.get_ipython_dir())
-    fn = ipython_dir / "ipy_user_conf.py"
-    if not fn.exists:
-        raise RuntimeError(
-            "Couldn't find IPython config file.  Tried %s" % (fn,))
-    old_contents = read_file(fn).joined
-    if re.search(r"^ *(pyflyby[.])?enable_auto_importer[(][)]", old_contents, re.M):
-        logger.info("Doing nothing, because already installed in %s", fn)
-        return
-    header = (
-        "\n"
-        "\n"
-        "#\n"
-        "# Enable the Pyflyby Auto Importer.\n"
-    )
-    new_contents = header + _generate_enabler_code()
-    contents = old_contents.rstrip() + new_contents
-    logger.info("Installing pyflyby auto importer in your IPython startup")
-    logger.info("Appending to %s:\n%s", fn, new_contents)
-    atomic_write_file(fn, contents)
 
 
 def _ipython_in_multiline(ip):
@@ -722,37 +565,6 @@ def InterceptPrintsDuringPromptCtx(ip):
             else:
                 return ip.separate_in + ip.prompt_in1.format(ip.execution_count)
         get_prompt = get_prompt_rlipython
-    elif hasattr(ip, "prompt_manager"):
-        # IPython >= 0.12 (known to work including up to 1.2, 2.1)
-        prompt_manager = ip.prompt_manager
-        def get_prompt_ipython_012():
-            pdb_instance = _get_pdb_if_is_in_pdb()
-            if pdb_instance is not None:
-                return pdb_instance.prompt
-            elif _ipython_in_multiline(ip):
-                return prompt_manager.render("in2")
-            else:
-                return ip.separate_in + prompt_manager.render("in")
-        get_prompt = get_prompt_ipython_012
-    elif hasattr(ip.hooks, "generate_prompt"):
-        # IPython 0.10, 0.11
-        generate_prompt = ip.hooks.generate_prompt
-        def get_prompt_ipython_010():
-            pdb_instance = _get_pdb_if_is_in_pdb()
-            if pdb_instance is not None:
-                return pdb_instance.prompt
-            elif _ipython_in_multiline(ip):
-                return generate_prompt(True)
-            else:
-                if hasattr(ip, "outputcache"):
-                    # IPython 0.10 (but not 0.11+):
-                    # Decrement the prompt_count since it otherwise
-                    # auto-increments.  (It's hard to avoid the
-                    # auto-increment as it happens as a side effect of
-                    # __str__!)
-                    ip.outputcache.prompt_count -= 1
-                return generate_prompt(False)
-        get_prompt = get_prompt_ipython_010
     else:
         # Too old or too new IPython version?
         return NullCtx()
@@ -818,8 +630,6 @@ def _get_ipython_app():
         # No active IPython app/shell.
         raise NoActiveIPythonAppError("No active IPython application")
     # The following has been tested on IPython 0.10.
-    if hasattr(IPython, "ipapi"):
-        return _IPython010TerminalApplication.instance()
     raise NoActiveIPythonAppError(
         "Could not figure out how to get active IPython application for IPython version %s"
         % (IPython.__version__,))
@@ -2269,7 +2079,9 @@ class AutoImporter:
 
     def _safe_call(self, function, *args, **kwargs):
         on_error = kwargs.pop("on_error", None)
-        raise_on_error = kwargs.pop("raise_on_error", "if_debug")
+        raise_on_error: Union[bool, Literal["if_debug"]] = kwargs.pop(
+            "raise_on_error", "if_debug"
+        )
         if self._errored:
             # If we previously errored, then we should already have
             # unregistered the hook that led to here.  However, in some corner
@@ -2295,7 +2107,7 @@ class AutoImporter:
                     logger.error("Error trying to disable: %s: %s",
                                  type(e2).__name__, e2)
                 # Raise or print traceback in debug mode.
-                if raise_on_error == True:
+                if raise_on_error is True:
                     raise
                 elif raise_on_error == 'if_debug':
                     if logger.debug_enabled:
@@ -2305,7 +2117,7 @@ class AutoImporter:
                             import traceback
                             traceback.print_exc()
                         raise
-                elif raise_on_error == False:
+                elif raise_on_error is False:
                     if logger.debug_enabled:
                         import traceback
                         traceback.print_exc()
@@ -2328,13 +2140,19 @@ class AutoImporter:
                          sorted([k for k,v in autoimported.items() if not v]))
         self._autoimported_this_cell = {}
 
-    def auto_import(self, arg, namespaces=None,
-                    raise_on_error='if_debug', on_error=None):
+    def auto_import(
+        self,
+        arg,
+        namespaces=None,
+        raise_on_error: Union[bool, Literal["if_debug"]] = "if_debug",
+        on_error=None,
+    ):
         if namespaces is None:
             namespaces = get_global_namespaces(self._ip)
 
         def post_import_hook(imp):
-            send_comm_message(MISSING_IMPORTS, {"missing_imports": str(imp)})
+            if not str(imp).startswith(PYFLYBY_LAZY_LOAD_PREFIX):
+                send_comm_message(MISSING_IMPORTS, {"missing_imports": str(imp)})
 
         return self._safe_call(
             auto_import, arg=arg, namespaces=namespaces,
@@ -2459,7 +2277,7 @@ def load_ipython_extension(arg=Ellipsis):
     enable_faulthandler()
     enable_signal_handler_debugger()
     enable_sigterm_handler(on_existing_handler='keep_existing')
-    add_debug_functions_to_builtins()
+    add_debug_functions_to_builtins(add_deprecated=False)
     inject_dynamic_import()
     initialize_comms()
 

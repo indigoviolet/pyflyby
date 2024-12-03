@@ -316,6 +316,14 @@ def _debug_exception(*exc_info, **kwargs):
         # will cause print_verbose_tb to include a line with just a colon.
         # TODO: avoid that line.
         exc_info = ("", "", exc_info)
+    if exc_info[1]:
+        # Explicitly set sys.last_value / sys.last_exc to ensure they are available
+        # in the debugger. One use case is that this allows users to call 
+        # pyflyby.saveframe() within the debugger.
+        if sys.version_info < (3, 12):
+            sys.last_value = exc_info[1]
+        else:
+            sys.last_exc = exc_info[1]
 
     with _DebuggerCtx(tty=tty) as pdb:
         if debugger_attached:
@@ -909,23 +917,24 @@ def enable_faulthandler():
         faulthandler.enable()
 
 
-def add_debug_functions_to_builtins():
-    '''
+def add_debug_functions_to_builtins(*, add_deprecated: bool):
+    """
     Install debugger(), etc. in the builtin global namespace.
-    '''
+    """
     functions_to_add = [
         'debugger',
         'debug_on_exception',
         'print_traceback',
     ]
-    # DEPRECATED: In the future, the following will not be added to builtins.
-    # Use debugger() instead.
-    functions_to_add += [
-        'breakpoint',
-        'debug_exception',
-        'debug_statement',
-        'waitpoint',
-    ]
+    if add_deprecated:
+        # DEPRECATED: In the future, the following will not be added to builtins.
+        # Use debugger() instead.
+        functions_to_add += [
+            "breakpoint",
+            "debug_exception",
+            "debug_statement",
+            "waitpoint",
+        ]
     for name in functions_to_add:
         setattr(builtins, name, globals()[name])
 
