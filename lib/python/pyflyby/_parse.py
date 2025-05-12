@@ -170,9 +170,9 @@ def _iter_child_nodes_in_order_internal_1(node):
                 node.type_comment,
                 node.decorator_list,
                 node.args,
+                node.type_params,
                 node.returns,
                 node.body,
-                node.type_params
             )
             yield res
 
