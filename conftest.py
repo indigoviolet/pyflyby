@@ -24,12 +24,12 @@ def pytest_runtest_setup(item):
     _setup_logger()
 
 
-def pytest_ignore_collect(path, config):
+def pytest_ignore_collect(collection_path, config):
     """ return True to prevent considering this path for collection.
     This hook is consulted for all files and directories prior to calling
     more specific hooks.
     """
-    if str(path).endswith('_docxref.py'):
+    if str(collection_path).endswith('_docxref.py'):
         return True
 
 def pytest_report_header(config):
