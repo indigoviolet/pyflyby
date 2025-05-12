@@ -1,6 +1,85 @@
 [build-system]
-requires = ["setuptools >= 61.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyflyby"
+dynamic = ["version"]
+description = "Python development productivity tools, in particular automatic import management"
+readme = "README.rst"
+authors = [
+    {name = "Karl Chen", email = "quarl@8166.clguba.z.quarl.org"},
+]
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Interpreters",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+]
+keywords = ["pyflyby", "py", "autopython", "autoipython", "productivity", "automatic imports", "autoimporter", "tidy-imports"]
+requires-python = ">3.9, <4"
+dependencies = [
+    "six",
+    "toml",
+    "black",
+    "typing_extensions>=4.6; python_version<'3.12'",
+]
+
+[project.optional-dependencies]
+test = [
+    "pexpect>=3.3",
+    "pytest",
+    "epydoc",
+    "rlipython",
+    "requests",
+    "flaky",
+]
+
+[project.urls]
+Documentation = "https://deshaw.github.io/pyflyby/"
+Source = "https://github.com/deshaw/pyflyby"
+
+[project.scripts]
+py = "pyflyby._py:py_main"
+py3 = "pyflyby._py:py_main"
+collect-exports = "pyflyby.__main__:collect_exports_main"
+collect-imports = "pyflyby.__main__:collect_imports_main"
+find-import = "pyflyby.__main__:find_import_main"
+list-bad-xrefs = "pyflyby.__main__:list_bad_xrefs_main"
+prune-broken-imports = "pyflyby.__main__:prune_broken_imports_main"
+pyflyby-diff = "pyflyby.__main__:pyflyby_diff_main"
+reformat-imports = "pyflyby.__main__:reformat_imports_main"
+replace-star-imports = "pyflyby.__main__:replace_star_imports_main"
+saveframe = "pyflyby.__main__:saveframe_main"
+tidy-imports = "pyflyby.__main__:tidy_imports_main"
+transform-imports = "pyflyby.__main__:transform_imports_main"
+
+[tool.hatch.version]
+path = "lib/python/pyflyby/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pyflyby"]
+directory = "lib/python"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "lib/python/pyflyby",
+    "bin",
+    "libexec",
+    "etc/pyflyby",
+    "doc/*.txt",
+    "lib/emacs/pyflyby.el",
+    "README.rst",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["lib", "tests"]
+doctest_modules = true
+python_files = ["test_*.py"]
 
 [tool.mypy]
 files = ['lib']

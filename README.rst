@@ -515,6 +515,30 @@ Pyflyby is released under a very permissive license, the MIT/X11 license; see
 LICENSE.txt.
 
 
+Development
+===========
+
+Testing
+-------
+
+Pyflyby uses pytest for testing. To run the tests:
+
+1. Install development dependencies::
+
+    uv pip install -e '.[test]'
+
+2. Run the tests::
+
+    PYTHONPATH=lib/python python -m pytest
+
+You can also run specific test files::
+
+    PYTHONPATH=lib/python python -m pytest tests/test_autoimp.py
+
+Or specific test functions::
+
+    PYTHONPATH=lib/python python -m pytest tests/test_autoimp.py::test_auto_import_1
+
 Release
 =======
 
@@ -524,9 +548,9 @@ Release
 
     export SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
 
-4. Build the SDIST::
+4. Build the package with hatchling::
 
-    python setup.py sdist
+    python -m build
 
 5. Optional Repack the Sdist to make sure the ZIP only contain SOURCE_DATE_EPOCH
    date using IPython tools::
